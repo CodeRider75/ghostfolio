@@ -265,12 +265,240 @@ model User {
   watchlist     SymbolProfile[] @relation("UserWatchlist")
   SymbolProfile SymbolProfile[]
 
+  // TAX SYSTEM RELATIONS
+  taxResidency          TaxResidency[]           @relation("UserTaxResidency")
+  employmentIncome      TaxEmploymentIncome[]    @relation("UserEmploymentIncome") 
+  investmentIncome      TaxInvestmentIncome[]    @relation("UserInvestmentIncome")
+  taxWithholdings       TaxWithholding[]         @relation("UserTaxWithholding")
+  retirementAccounts    TaxRetirementAccounts[]  @relation("UserRetirementAccounts")
+  taxCalculations       TaxCalculation[]         @relation("UserTaxCalculation")
+  rsuGrants             TaxRsuGrant[]            @relation("UserRsuGrants")
+  rsuVestings           TaxRsuVesting[]          @relation("UserRsuVesting") 
+  esppPurchases         TaxEsppPurchase[]        @relation("UserEsppPurchases")
+
   @@index([accessToken])
   @@index([createdAt])
   @@index([provider])
   @@index([role])
   @@index([thirdPartyId])
 }
+
+// =============================================================================
+// TAX CALCULATION SYSTEM MODELS
+// =============================================================================
+
+// Tax Residency Tracking (calendar days per country)
+model TaxResidency {
+  id          String   @id @default(uuid())
+  userId      String
+  year        Int
+  country     String   // 'CA', 'US', 'IN' 
+  startDate   DateTime
+  endDate     DateTime
+  days        Int      // calculated field
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation("UserTaxResidency", fields: [userId], onDelete: Cascade, references: [id])
+  
+  @@unique([userId, year, country, startDate])
+  @@index([userId, year])
+  @@index([country])
+}
+
+// Employment Income Tracking
+model TaxEmploymentIncome {
+  id              String   @id @default(uuid())
+  userId          String
+  year            Int
+  baseSalary      Float    // Annual base salary in CAD
+  bonusPercent    Float?   // Bonus as % of base salary
+  bonusAmount     Float?   // Or fixed bonus amount
+  currency        String   @default("CAD")
+  province        String   @default("ON") // Ontario default
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation("UserEmploymentIncome", fields: [userId], onDelete: Cascade, references: [id])
+  
+  @@unique([userId, year])
+  @@index([userId])
+  @@index([year])
+}
+
+// RSU Grant Tracking (individual grants with vesting schedules)
+model TaxRsuGrant {
+  id              String   @id @default(uuid())
+  userId          String
+  grantDate       DateTime
+  grantId         String   // Company grant ID (e.g., "RSU-2024-001")
+  totalShares     Int      // Total shares granted
+  strikePrice     Float?   // For stock options (RSUs usually $0)
+  currency        String   @default("USD") // Usually USD for tech companies
+  vestingSchedule Json     // Array of vesting dates and quantities
+  status          GrantStatus @default(ACTIVE)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation("UserRsuGrants", fields: [userId], onDelete: Cascade, references: [id])
+  vestingEvents   TaxRsuVesting[]
+  
+  @@unique([userId, grantId])
+  @@index([userId])
+  @@index([grantDate])
+}
+
+// RSU Vesting Events (actual vesting occurrences)
+model TaxRsuVesting {
+  id              String      @id @default(uuid())
+  userId          String
+  grantId         String      // Link to TaxRsuGrant
+  vestDate        DateTime    // Date shares vested
+  sharesVested    Int         // Number of shares that vested
+  fmvPerShare     Float       // Fair market value per share (USD)
+  totalValueUSD   Float       // Total value in USD
+  exchangeRate    Float       // USD to CAD rate on vest date
+  totalValueCAD   Float       // Total value in CAD (taxable income)
+  taxWithheldUSD  Float?      // US tax withheld
+  taxWithheldCAD  Float?      // CAD equivalent of withholding
+  isAutoCalculated Boolean    @default(false) // From existing transactions
+  orderId         String?     // Link to Order if exists
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  user            User        @relation("UserRsuVesting", fields: [userId], onDelete: Cascade, references: [id])
+  grant           TaxRsuGrant @relation(fields: [grantId], references: [grantId])
+  
+  @@index([userId, vestDate])
+  @@index([grantId])
+}
+
+// ESPP Purchase Events  
+model TaxEsppPurchase {
+  id                String   @id @default(uuid())
+  userId            String
+  purchaseDate      DateTime
+  purchasePeriodEnd DateTime // End of purchase period
+  sharesPurchased   Int
+  fmvPerShare       Float    // Fair market value on purchase date
+  purchasePrice     Float    // Discounted purchase price
+  discountPercent   Float    // Discount percentage (e.g., 15%)
+  discountAmountUSD Float    // Taxable discount amount
+  exchangeRate      Float    // USD to CAD rate
+  discountAmountCAD Float    // Taxable amount in CAD
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User     @relation("UserEsppPurchases", fields: [userId], onDelete: Cascade, references: [id])
+  
+  @@index([userId, purchaseDate])
+}
+
+// Investment Income (calculated from existing transactions + manual entries)
+model TaxInvestmentIncome {
+  id              String          @id @default(uuid())
+  userId          String
+  year            Int
+  type            InvestmentIncomeType
+  amount          Float           // Amount in CAD
+  amountOriginal  Float?          // Original currency amount
+  currency        String?         // Original currency
+  exchangeRate    Float?          // CAD conversion rate
+  sourceCountry   String?         // 'CA', 'US', 'IN' for tax credit calc
+  isAutoCalculated Boolean        @default(false) // true if from transactions
+  transactionDate DateTime?       // For currency conversion
+  orderId         String?         // Link to original transaction if auto-calc
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  user            User            @relation("UserInvestmentIncome", fields: [userId], onDelete: Cascade, references: [id])
+  
+  @@index([userId, year])
+  @@index([type])
+  @@index([sourceCountry])
+}
+
+// Tax Withholdings (track taxes already paid)
+model TaxWithholding {
+  id            String   @id @default(uuid())
+  userId        String
+  year          Int
+  country       String   // Country where tax was withheld
+  type          WithholdingType
+  amount        Float    // Amount withheld in CAD
+  amountOriginal Float?  // Original currency
+  currency      String?  // Original currency
+  exchangeRate  Float?   // Conversion rate used
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation("UserTaxWithholding", fields: [userId], onDelete: Cascade, references: [id])
+  
+  @@index([userId, year])
+  @@index([country])
+  @@index([type])
+}
+
+// RRSP/TFSA Contribution Room Tracking
+model TaxRetirementAccounts {
+  id                    String   @id @default(uuid())
+  userId                String
+  year                  Int
+  rrspeRoomStart        Float    @default(0) // Room at start of year
+  rrspeRoomEarned       Float    @default(0) // 18% of prior year income
+  rrspeRoomCarriedForward Float  @default(0) // Unused room from prior years
+  rrspeContributed      Float    @default(0) // Contributions made this year
+  rrspeEmployerMatching Float    @default(0) // Employer matching
+  rrspeRoomRemaining    Float    @default(0) // Calculated remaining room
+  tfsaRoomStart         Float    @default(0) // Room at start of year
+  tfsaRoomAnnual        Float    @default(7000) // Annual TFSA limit
+  tfsaRoomCarriedForward Float   @default(0) // Unused room
+  tfsaContributed       Float    @default(0) // Contributions this year
+  tfsaWithdrawn         Float    @default(0) // Withdrawals (add to next year room)
+  tfsaRoomRemaining     Float    @default(0) // Calculated remaining room
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  user                  User     @relation("UserRetirementAccounts", fields: [userId], onDelete: Cascade, references: [id])
+  
+  @@unique([userId, year])
+  @@index([userId])
+}
+
+// Tax Calculations (final computed results)
+model TaxCalculation {
+  id                   String   @id @default(uuid())
+  userId               String
+  year                 Int
+  province             String   @default("ON")
+  totalEmploymentIncome Float   @default(0)
+  totalInvestmentIncome Float   @default(0)
+  totalCapitalGains    Float    @default(0) // 50% inclusion
+  totalTaxableIncome   Float    @default(0)
+  federalTax           Float    @default(0)
+  provincialTax        Float    @default(0)
+  totalTaxOwed         Float    @default(0)
+  totalWithholdings    Float    @default(0)
+  estimatedRefund      Float    @default(0) // or amount owing
+  calculatedAt         DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  user                 User     @relation("UserTaxCalculation", fields: [userId], onDelete: Cascade, references: [id])
+  
+  @@unique([userId, year])
+  @@index([userId])
+  @@index([year])
+}
+
+// Exchange Rate Cache (for currency conversions)
+model ExchangeRate {
+  id       String   @id @default(uuid())
+  date     DateTime
+  fromCurrency String // USD, EUR, etc.
+  toCurrency   String // CAD
+  rate     Float
+  source   String   @default("BANK_OF_CANADA") // Rate source
+  createdAt DateTime @default(now())
+  
+  @@unique([date, fromCurrency, toCurrency])
+  @@index([date])
+  @@index([fromCurrency, toCurrency])
+}
+
+// =============================================================================
+// EXISTING ENUMS
+// =============================================================================
 
 enum AccessPermission {
   READ
@@ -342,4 +570,38 @@ enum Type {
 enum ViewMode {
   DEFAULT
   ZEN
+}
+
+// =============================================================================
+// TAX SYSTEM ENUMS
+// =============================================================================
+
+enum InvestmentIncomeType {
+  DIVIDEND_ELIGIBLE     // Canadian eligible dividends
+  DIVIDEND_NON_ELIGIBLE // Canadian non-eligible dividends  
+  DIVIDEND_FOREIGN      // Foreign dividends
+  INTEREST              // Interest income
+  CAPITAL_GAINS         // Capital gains (50% taxable)
+  CAPITAL_LOSSES        // Capital losses
+}
+
+enum WithholdingType {
+  INCOME_TAX             // Regular income tax withheld
+  RSU_WITHHOLDING        // Tax withheld on RSU vesting
+  ESPP_WITHHOLDING       // Tax withheld on ESPP discount
+  DIVIDEND_WITHHOLDING   // Foreign dividend withholding
+  INTEREST_WITHHOLDING   // Foreign interest withholding
+  TDS_FIXED_DEPOSIT      // Indian TDS on Fixed Deposits
+  TDS_SAVINGS_ACCOUNT    // Indian TDS on Savings Account Interest
+  TDS_SALARY             // Indian TDS on Salary
+  TDS_RENT               // Indian TDS on Rent Income
+  TDS_PROFESSIONAL_FEES  // Indian TDS on Professional Services
+  TDS_OTHER              // Other Indian TDS categories
+}
+
+enum GrantStatus {
+  ACTIVE     // Grant is active and vesting
+  EXPIRED    // Grant expired unvested
+  CANCELLED  // Grant was cancelled
+  COMPLETED  // All shares have vested
 }
